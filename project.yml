@@ -1,0 +1,46 @@
+name: Transkryptor
+options:
+  bundleIdPrefix: com.franioz
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+
+packages:
+  WhisperKit:
+    url: https://github.com/argmaxinc/WhisperKit
+    exactVersion: 1.0.0
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    SWIFT_STRICT_CONCURRENCY: minimal
+    MARKETING_VERSION: "1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    ENABLE_APP_SANDBOX: NO
+    ENABLE_HARDENED_RUNTIME: NO
+    DEAD_CODE_STRIPPING: YES
+
+targets:
+  Transkryptor:
+    type: application
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: Transkryptor
+        excludes:
+          - "**/*.md"
+    dependencies:
+      - package: WhisperKit
+        product: WhisperKit
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.franioz.Transkryptor
+        PRODUCT_NAME: Transkryptor
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: Transkryptor/Info.plist
+        CODE_SIGN_STYLE: Automatic
+        COMBINE_HIDPI_IMAGES: YES
+        ASSETCATALOG_COMPILER_GENERATE_ASSET_SYMBOLS: NO
+        LD_RUNPATH_SEARCH_PATHS:
+          - "$(inherited)"
+          - "@executable_path/../Frameworks"

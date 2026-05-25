@@ -129,17 +129,17 @@ Keyboard shortcuts are documented in [`SHORTCUTS.md`](SHORTCUTS.md).
     </td>
     <td align="center" width="50%">
       <img src="docs/screenshots/02-notes.png" alt="AI study notes" /><br/>
-      <sub><b>AI study notes</b><br/>objectives, key takeaways, glossary, self-test</sub>
+      <sub><b>AI study notes</b><br/>objectives, TL;DR, sections — with a rendered diagram</sub>
     </td>
   </tr>
   <tr>
     <td align="center" width="50%">
-      <img src="docs/screenshots/03-diagram-formula.png" alt="Rendered diagram and formula" /><br/>
-      <sub><b>Diagrams & formulas</b><br/>Mermaid + LaTeX rasterized to images</sub>
+      <img src="docs/screenshots/03-notch-cockpit.png" alt="Notch cockpit" /><br/>
+      <sub><b>Notch cockpit</b><br/>start, stop & screenshot from the notch — without leaving the lecture</sub>
     </td>
     <td align="center" width="50%">
-      <img src="docs/screenshots/04-notch-gallery.png" alt="Notch cockpit and screenshot gallery" /><br/>
-      <sub><b>Notch cockpit & gallery</b><br/>control + timestamped screenshots</sub>
+      <img src="docs/screenshots/04-embedded-screenshots.png" alt="Screenshots embedded in notes" /><br/>
+      <sub><b>Screenshots in your notes</b><br/>captured during the lecture, placed in context</sub>
     </td>
   </tr>
 </table>

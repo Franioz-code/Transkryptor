@@ -28,7 +28,7 @@ final class TranscriptionEngine {
     /// podpisaniu traci do niego dostęp, przez co CoreML nie może odczytać/odświeżyć metadanych
     /// modelu ("Invalid metadata… nie masz praw dostępu"). Application Support nie jest pod TCC
     /// i jest zawsze zapisywalny, więc model ładuje się bez próśb o uprawnienia.
-    static let modelsDownloadBase: URL = {
+    nonisolated static let modelsDownloadBase: URL = {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
             .appendingPathComponent("Transkryptor/huggingface", isDirectory: true)
         try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
@@ -36,7 +36,7 @@ final class TranscriptionEngine {
     }()
 
     /// Katalog konkretnego wariantu modelu w naszej bazie (zgodny z układem Hub: models/repo/wariant).
-    static func modelDirectory(variant: String) -> URL {
+    nonisolated static func modelDirectory(variant: String) -> URL {
         modelsDownloadBase.appendingPathComponent("models/argmaxinc/whisperkit-coreml/\(variant)", isDirectory: true)
     }
 
@@ -180,7 +180,11 @@ final class TranscriptionEngine {
         guard let whisperKit, isReady else {
             throw TranscriptionError.notReady
         }
-        let wavURL = try convertToWav(source: audioURL)
+        // Konwersję WAV liczymy poza głównym wątkiem — to plikowa pętla AVAudioConverter, która
+        // przy długim nagraniu zacinałaby UI, gdyby szła na MainActor.
+        let wavURL = try await Task.detached(priority: .userInitiated) {
+            try Self.convertToWav(source: audioURL)
+        }.value
         defer { try? FileManager.default.removeItem(at: wavURL) }
 
         let options = DecodingOptions(
@@ -219,7 +223,7 @@ final class TranscriptionEngine {
 
     // MARK: - Konwersja do 16 kHz mono WAV (AVFoundation)
 
-    private func convertToWav(source: URL) throws -> URL {
+    nonisolated private static func convertToWav(source: URL) throws -> URL {
         let inputFile = try AVAudioFile(forReading: source)
         let inputFormat = inputFile.processingFormat
 

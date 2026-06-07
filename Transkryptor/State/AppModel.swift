@@ -798,6 +798,7 @@ final class AppModel {
 
     func endAutoSession() async {
         let url = await capture.stop()
+        isAutoActive = false   // nagrywanie auto zakończone; dalej tylko podział/przetwarzanie
         // Domknij transkrypt live (siatka bezpieczeństwa już jest na dysku).
         if usedLive { await finalizeLive() }
 
@@ -888,6 +889,9 @@ final class AppModel {
         guard let url = sessionURL else { return }
         await ensureModelReady()
         guard transcription.isReady else { return }
+        // Po wyjściu (też przy wczesnym return / edycji segmentów w trakcie) zgaś wszystkie spinnery,
+        // żeby żadna karta segmentu nie została z wiecznie kręcącym się wskaźnikiem.
+        defer { for i in pendingSegments.indices { pendingSegments[i].previewLoading = false } }
         for index in pendingSegments.indices {
             guard showingSegmentReview else { return }
             pendingSegments[index].previewLoading = true
@@ -935,6 +939,8 @@ final class AppModel {
     func cancelSegmentReview() {
         showingSegmentReview = false
         pendingSegments = []
+        isAutoActive = false
+        transcription.unload()   // podglądy segmentów wczytały model — zwolnij RAM przy anulowaniu
         // Anulowanie podziału NIE kasuje materiału — zostaje cała sesja jako jeden wpis z transkrypcją.
         if let rec = recoveryLecture {
             let prefix = sessionTitlePrefix.isEmpty ? "Wykład" : sessionTitlePrefix
@@ -1370,9 +1376,32 @@ final class AppModel {
         for course in courses {
             let notesDir = course.appendingPathComponent("notatki", isDirectory: true)
             guard let mdFiles = try? fm.contentsOfDirectory(at: notesDir, includingPropertiesForKeys: nil) else { continue }
-            for mdURL in mdFiles where mdURL.pathExtension == "md" {
+            let mds = mdFiles.filter { $0.pathExtension == "md" }
+
+            // base64 danego pliku zasobu liczymy RAZ i wplatamy do WSZYSTKICH notatek, które go
+            // używają — kilka wersji (`<baza>.md`, `<baza>__v2.md`) współdzieli ten sam `.assets/`.
+            // Plik kasujemy DOPIERO po udanym zapisie wszystkich notatek (write-then-delete),
+            // więc żadna notatka nie zostanie z odwołaniem do skasowanego pliku.
+            var uriCache: [String: String?] = [:]   // rel → data:URI (nil = nie wplatać: nowy/brak)
+            func dataURI(forRel rel: String) -> String? {
+                if let cached = uriCache[rel] { return cached }
+                let fileURL = notesDir.appendingPathComponent(rel)
+                var result: String? = nil
+                if let attrs = try? fm.attributesOfItem(atPath: fileURL.path),
+                   let mtime = attrs[.modificationDate] as? Date, mtime < cutoff,
+                   let data = try? Data(contentsOf: fileURL) {
+                    let mime = fileURL.pathExtension.lowercased() == "png" ? "image/png" : "image/jpeg"
+                    result = "data:\(mime);base64,\(data.base64EncodedString())"
+                }
+                uriCache[rel] = result
+                return result
+            }
+
+            var safeToDelete = Set<String>()   // rel: wplecione i notatka zapisana
+            var failedWrite = Set<String>()    // rel: zapis notatki się nie powiódł → NIE kasuj
+            for mdURL in mds {
                 guard var md = try? String(contentsOf: mdURL, encoding: .utf8), md.contains(".assets/") else { continue }
-                var changed = false
+                var relsThisFile = Set<String>()
                 let lines = md.components(separatedBy: "\n").map { line -> String in
                     let t = line.trimmingCharacters(in: .whitespaces)
                     guard t.hasPrefix("!["), t.hasSuffix(")"), let sep = t.range(of: "](") else { return line }
@@ -1383,21 +1412,24 @@ final class AppModel {
                         rel = String(inside[inside.startIndex..<q.lowerBound])
                         widthTitle = String(inside[q.lowerBound...])
                     }
-                    let fileURL = notesDir.appendingPathComponent(rel)
-                    guard let attrs = try? fm.attributesOfItem(atPath: fileURL.path),
-                          let mtime = attrs[.modificationDate] as? Date, mtime < cutoff,
-                          let data = try? Data(contentsOf: fileURL) else { return line }
-                    let mime = fileURL.pathExtension.lowercased() == "png" ? "image/png" : "image/jpeg"
+                    guard let uri = dataURI(forRel: rel) else { return line }
                     let alt = String(t[t.index(t.startIndex, offsetBy: 2)..<sep.lowerBound])
-                    try? fm.removeItem(at: fileURL)
-                    changed = true; embedded += 1
-                    return "![\(alt)](data:\(mime);base64,\(data.base64EncodedString())\(widthTitle))"
+                    relsThisFile.insert(rel)
+                    return "![\(alt)](\(uri)\(widthTitle))"
                 }
-                if changed {
-                    md = lines.joined(separator: "\n")
-                    try? md.write(to: mdURL, atomically: true, encoding: .utf8)
+                guard !relsThisFile.isEmpty else { continue }
+                md = lines.joined(separator: "\n")
+                if (try? md.write(to: mdURL, atomically: true, encoding: .utf8)) != nil {
+                    embedded += relsThisFile.count
+                    safeToDelete.formUnion(relsThisFile)
                     if let lec = selectedLecture, lec.latestNotesPath == mdURL.path { notesMarkdown = md }
+                } else {
+                    failedWrite.formUnion(relsThisFile)   // zachowaj pliki — notatka nie zapisała się
                 }
+            }
+            // Kasuj tylko zasoby wplecione do KAŻDEJ notatki, która ich używała.
+            for rel in safeToDelete.subtracting(failedWrite) {
+                try? fm.removeItem(at: notesDir.appendingPathComponent(rel))
             }
         }
         return embedded

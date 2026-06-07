@@ -89,7 +89,7 @@ struct SettingsView: View {
             } else {
                 HStack { ProgressView().controlSize(.small); Text("Liczę…").foregroundStyle(.secondary) }
             }
-            Text("Aplikacja trzyma dane w ~/Navoica, a modele w ~/Documents/huggingface. Audio jest kasowane po przetworzeniu (chyba że je zachowujesz poniżej).")
+            Text("Aplikacja trzyma notatki w ~/Navoica, a modele w Application Support. Audio jest kasowane po przetworzeniu (chyba że je zachowujesz poniżej).")
                 .font(.caption).foregroundStyle(.secondary)
         }
     }

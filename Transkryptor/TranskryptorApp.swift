@@ -48,6 +48,9 @@ struct RootView: View {
         }
         .onAppear { appModel.modelContext = modelContext }
         .task(id: hasCompletedOnboarding) {
+            // Podłącz kontekst tu, a nie tylko w .onAppear — kolejność .onAppear vs .task nie jest
+            // gwarantowana, a odzysk przerwanych sesji wymaga kontekstu (inaczej po crashu nie zadziała).
+            appModel.modelContext = modelContext
             if hasCompletedOnboarding {
                 appModel.recoverInterruptedSessions()
                 appModel.embedAgedScreenshots()   // wtop stare zrzuty w notatki, zwolnij luźne pliki

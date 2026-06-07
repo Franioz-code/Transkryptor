@@ -23,6 +23,23 @@ final class TranscriptionEngine {
 
     private var whisperKit: WhisperKit?
 
+    /// Gdzie trzymamy modele. CELOWO w Application Support, NIE w ~/Documents.
+    /// `~/Documents` jest chroniony przez TCC — aplikacja self-signed po każdym ponownym
+    /// podpisaniu traci do niego dostęp, przez co CoreML nie może odczytać/odświeżyć metadanych
+    /// modelu ("Invalid metadata… nie masz praw dostępu"). Application Support nie jest pod TCC
+    /// i jest zawsze zapisywalny, więc model ładuje się bez próśb o uprawnienia.
+    static let modelsDownloadBase: URL = {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+            .appendingPathComponent("Transkryptor/huggingface", isDirectory: true)
+        try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        return base
+    }()
+
+    /// Katalog konkretnego wariantu modelu w naszej bazie (zgodny z układem Hub: models/repo/wariant).
+    static func modelDirectory(variant: String) -> URL {
+        modelsDownloadBase.appendingPathComponent("models/argmaxinc/whisperkit-coreml/\(variant)", isDirectory: true)
+    }
+
     /// Czy model jest już gotowy do transkrypcji.
     var isReady: Bool { state == .ready && whisperKit != nil }
 
@@ -69,8 +86,7 @@ final class TranscriptionEngine {
     /// Czy pliki danego wariantu są już na dysku (gotowe do szybkiego wczytania).
     func isDownloaded(variant: String?) -> Bool {
         let resolved = resolvedVariant(variant)
-        let dir = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Documents/huggingface/models/argmaxinc/whisperkit-coreml/\(resolved)")
+        let dir = Self.modelDirectory(variant: resolved)
         return FileManager.default.fileExists(atPath: dir.appendingPathComponent("AudioEncoder.mlmodelc").path)
     }
 
@@ -101,36 +117,55 @@ final class TranscriptionEngine {
 
         state = .downloading(0)
         do {
-            // Spróbuj zalecany wariant; jeśli niedostępny, użyj domyślnego dla urządzenia (bezpiecznik).
-            var used = resolved
-            let folder: URL
-            if let f = try? await download(resolved) {
-                folder = f
-            } else {
-                let fallback = WhisperKit.recommendedModels().default
-                used = fallback
-                folder = try await download(fallback)
-            }
-
-            state = .loading
-            let config = WhisperKitConfig(
-                modelFolder: folder.path,
-                verbose: false,
-                prewarm: false,   // mniejszy skok pamięci przy ładowaniu (model i tak ładujemy na żądanie)
-                load: true,
-                download: false
-            )
-            whisperKit = try await WhisperKit(config)
-            loadedVariant = used
-            state = .ready
+            try await downloadAndLoad(resolved)
         } catch {
+            // Samonaprawa TYLKO przy oznakach uszkodzenia/niespójności plików modelu
+            // (nieważne metadane CoreML), nie przy błędach przejściowych (brak sieci, brak RAM).
+            // W Application Support mamy pełne prawa zapisu, więc usunięcie wariantu i ponowne
+            // pobranie leczy „Invalid metadata / could not remove corrupted metadata file".
+            let d = error.localizedDescription.lowercased()
+            let looksCorrupt = d.contains("metadata") || d.contains("corrupt") || d.contains("could not remove")
+            if looksCorrupt {
+                try? FileManager.default.removeItem(at: Self.modelDirectory(variant: resolved))
+                do {
+                    state = .downloading(0)
+                    try await downloadAndLoad(resolved)
+                    return
+                } catch { /* poniżej zgłosimy błąd */ }
+            }
             whisperKit = nil
             state = .failed("Nie udało się przygotować modelu transkrypcji: \(error.localizedDescription)")
         }
     }
 
+    private func downloadAndLoad(_ resolved: String) async throws {
+        // Spróbuj zalecany wariant; jeśli niedostępny, użyj domyślnego dla urządzenia (bezpiecznik).
+        var used = resolved
+        let folder: URL
+        if let f = try? await download(resolved) {
+            folder = f
+        } else {
+            let fallback = WhisperKit.recommendedModels().default
+            used = fallback
+            folder = try await download(fallback)
+        }
+
+        state = .loading
+        let config = WhisperKitConfig(
+            downloadBase: Self.modelsDownloadBase,   // tu też trafia tokenizer — poza TCC
+            modelFolder: folder.path,
+            verbose: false,
+            prewarm: false,   // mniejszy skok pamięci przy ładowaniu (model i tak ładujemy na żądanie)
+            load: true,
+            download: false
+        )
+        whisperKit = try await WhisperKit(config)
+        loadedVariant = used
+        state = .ready
+    }
+
     private func download(_ variant: String) async throws -> URL {
-        try await WhisperKit.download(variant: variant, progressCallback: { progress in
+        try await WhisperKit.download(variant: variant, downloadBase: Self.modelsDownloadBase, progressCallback: { progress in
             Task { @MainActor in
                 if case .downloading = self.state {
                     self.state = .downloading(progress.fractionCompleted)

@@ -187,10 +187,10 @@ struct StorageService {
         return total
     }
 
-    /// Bazowy katalog cache modeli WhisperKit (per-user).
+    /// Bazowy katalog cache modeli WhisperKit (Application Support — poza TCC, zob. TranscriptionEngine).
     var modelsBaseDirectory: URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Documents/huggingface/models/argmaxinc/whisperkit-coreml", isDirectory: true)
+        TranscriptionEngine.modelsDownloadBase
+            .appendingPathComponent("models/argmaxinc/whisperkit-coreml", isDirectory: true)
     }
 
     /// Lista pobranych wariantów modeli z rozmiarami (do panelu pamięci).

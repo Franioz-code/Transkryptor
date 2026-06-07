@@ -63,15 +63,13 @@ enum NotesRichText {
     }
 
     private static func imageBlock(alt: String, path: String, widthPercent: Int?, baseURL: URL?) -> NSAttributedString {
-        guard let url = resolve(path, baseURL: baseURL),
-              let data = try? Data(contentsOf: url),
-              let image = NSImage(data: data) else {
+        guard let data = imageData(path, baseURL: baseURL), let image = NSImage(data: data) else {
             return NSAttributedString(string: (alt.isEmpty ? "[zrzut ekranu]" : alt) + "\n",
                                       attributes: [.font: captionFont, .foregroundColor: NSColor.secondaryLabelColor])
         }
         let attachment = NSTextAttachment()
         let wrapper = FileWrapper(regularFileWithContents: data)
-        wrapper.preferredFilename = url.lastPathComponent
+        wrapper.preferredFilename = path.hasPrefix("data:") ? "obraz.jpg" : (resolve(path, baseURL: baseURL)?.lastPathComponent ?? "obraz")
         attachment.fileWrapper = wrapper
 
         let cap: CGFloat = 520
@@ -211,5 +209,14 @@ enum NotesRichText {
         if path.hasPrefix("/") { return URL(fileURLWithPath: path) }
         if let baseURL { return baseURL.appendingPathComponent(path) }
         return nil
+    }
+
+    /// Dane obrazu z pliku lub wtopionego data:base64.
+    private static func imageData(_ path: String, baseURL: URL?) -> Data? {
+        if path.hasPrefix("data:"), let comma = path.firstIndex(of: ",") {
+            return Data(base64Encoded: String(path[path.index(after: comma)...]))
+        }
+        guard let url = resolve(path, baseURL: baseURL) else { return nil }
+        return try? Data(contentsOf: url)
     }
 }

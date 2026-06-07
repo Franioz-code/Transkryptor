@@ -10,13 +10,16 @@ struct SettingsView: View {
     @AppStorage(SettingsKeys.autoMinSilence) private var autoMinSilence = 4.0
     @AppStorage(SettingsKeys.autoSilenceThreshold) private var autoSilenceThreshold = 0.02
     @AppStorage(SettingsKeys.autoMinSegment) private var autoMinSegment = 30.0
-    @AppStorage(SettingsKeys.liveTranscription) private var liveTranscription = true
+    @AppStorage(SettingsKeys.liveTranscription) private var liveTranscription = false
     @AppStorage(SettingsKeys.keepAudio) private var keepAudio = false
+    @AppStorage(SettingsKeys.embedOldScreenshots) private var embedOldScreenshots = true
 
     @State private var availableModels: [String] = []
     @State private var recommendedDefault = ""
     @State private var loadingModels = false
     @State private var audioCleanupInfo = ""
+    @State private var report: StorageReport?
+    @State private var storageInfo = ""
 
     private let notesModels = ["claude-sonnet-4-6", "claude-opus-4-7"]
 
@@ -27,12 +30,75 @@ struct SettingsView: View {
             notesSection
             autoModeSection
             screenshotSection
+            memorySection
             storageSection
         }
         .formStyle(.grouped)
         .padding(20)
         .task {
             recommendedDefault = TranscriptionEngine.recommendedDefaultVariant()
+            report = appModel.storageReport()
+        }
+    }
+
+    // MARK: - Pamięć (zajętość dysku)
+
+    private var memorySection: some View {
+        Section("Pamięć — co ile zajmuje") {
+            if let r = report {
+                storageRow("Notatki", r.notesBytes, "doc.text")
+                storageRow("Transkrypcje", r.transcriptsBytes, "text.alignleft")
+                storageRow("Zrzuty ekranu", r.screenshotsBytes, "photo.on.rectangle")
+                storageRow("Nagrania audio", r.audioBytes, "waveform")
+                storageRow("Modele transkrypcji", r.modelsBytes, "cpu")
+                Divider()
+                HStack {
+                    Text("Razem").font(.headline)
+                    Spacer()
+                    Text(StorageReport.format(r.totalBytes)).font(.headline.monospacedDigit())
+                }
+
+                if r.models.count > 1 {
+                    DisclosureGroup("Modele (\(r.models.count)) — szczegóły") {
+                        ForEach(r.models) { m in
+                            HStack {
+                                Image(systemName: m.isActive ? "checkmark.circle.fill" : "circle")
+                                    .foregroundStyle(m.isActive ? .green : .secondary).font(.caption)
+                                Text(m.name).font(.caption).lineLimit(1).truncationMode(.middle)
+                                Spacer()
+                                Text(StorageReport.format(m.bytes)).font(.caption.monospacedDigit())
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
+
+                HStack {
+                    Button("Usuń nieużywane modele") {
+                        let n = appModel.deleteUnusedModels()
+                        storageInfo = n == 0 ? "Brak modeli do usunięcia." : "Usunięto modeli: \(n)."
+                        report = appModel.storageReport()
+                    }
+                    .disabled(r.models.filter { !$0.isActive }.isEmpty)
+                    Spacer()
+                    Button("Odśwież") { report = appModel.storageReport() }
+                }
+                if !storageInfo.isEmpty {
+                    Text(storageInfo).font(.caption).foregroundStyle(.green)
+                }
+            } else {
+                HStack { ProgressView().controlSize(.small); Text("Liczę…").foregroundStyle(.secondary) }
+            }
+            Text("Aplikacja trzyma dane w ~/Navoica, a modele w ~/Documents/huggingface. Audio jest kasowane po przetworzeniu (chyba że je zachowujesz poniżej).")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    private func storageRow(_ title: String, _ bytes: Int64, _ icon: String) -> some View {
+        HStack {
+            Label(title, systemImage: icon)
+            Spacer()
+            Text(StorageReport.format(bytes)).monospacedDigit().foregroundStyle(.secondary)
         }
     }
 
@@ -92,7 +158,7 @@ struct SettingsView: View {
                 .font(.caption).foregroundStyle(.secondary)
 
             Toggle("Transkrypcja na żywo (w trakcie nagrywania)", isOn: $liveTranscription)
-            Text("Tekst pojawia się co kilka sekund podczas nagrywania (tryb manualny). Notatki AI powstają dopiero po zatrzymaniu. Uwaga RAM: gdy włączona, model jest w pamięci przez całe nagranie. Dla najniższego zużycia przy długich sesjach WYŁĄCZ — wtedy model wchodzi do RAM dopiero na czas transkrypcji po stopie.")
+            Text("Domyślnie WYŁĄCZONE (zalecane). Włączona pokazuje tekst na bieżąco, ale trzyma model w pamięci przez całe nagranie — na wolniejszym Macu przy długim wykładzie może mocno obciążyć RAM. Wyłączona: transkrypt powstaje po zatrzymaniu, kawałkami z pliku, przy stałym, niskim zużyciu pamięci. Notatki AI i tak powstają dopiero po stopie.")
                 .font(.caption).foregroundStyle(.secondary)
         }
     }
@@ -204,6 +270,10 @@ struct SettingsView: View {
 
             Toggle("Zachowaj pliki audio po przetworzeniu", isOn: $keepAudio)
             Text("Domyślnie WYŁĄCZONE — po wygenerowaniu transkryptu i notatek nagranie audio jest usuwane (oszczędza dużo miejsca; notatki powstają z tekstu, nie z audio).")
+                .font(.caption).foregroundStyle(.secondary)
+
+            Toggle("Wtapiaj zrzuty w notatkę po 2 dniach", isOn: $embedOldScreenshots)
+            Text("Po 2 dniach luźne pliki zrzutów są wtapiane bezpośrednio w plik notatki i kasowane z dysku — zdjęcia zostają w notatce, ale nie zajmują miejsca jako osobne pliki.")
                 .font(.caption).foregroundStyle(.secondary)
 
             HStack {

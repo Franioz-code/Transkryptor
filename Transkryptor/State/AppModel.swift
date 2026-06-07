@@ -254,10 +254,11 @@ final class AppModel {
     private var liveAccumulator: [Float] = []
     private var usedLive = false
 
+    /// Domyślnie WYŁĄCZONE — transkrypcja live trzyma model w RAM przez całe nagranie i przy
+    /// długich wykładach na wolniejszym Macu może spiętrzać bufor. Bezpieczna ścieżka: transkrypt
+    /// powstaje po STOP, kawałkami z dysku (stała, mała pamięć). Power-userzy włączą w Ustawieniach.
     var liveTranscriptionEnabled: Bool {
-        UserDefaults.standard.object(forKey: SettingsKeys.liveTranscription) == nil
-            ? true
-            : UserDefaults.standard.bool(forKey: SettingsKeys.liveTranscription)
+        UserDefaults.standard.bool(forKey: SettingsKeys.liveTranscription)
     }
 
     @ObservationIgnored private var _notch: NotchStatusController?
@@ -546,21 +547,29 @@ final class AppModel {
         }
     }
 
+    /// Maksymalny fragment podawany do transkrypcji live (~30 s). Większy = wolniejszy render
+    /// i większy skok pamięci; gdy zaległości rosną, transkrybujemy najnowsze 30 s, a starsze
+    /// pomijamy w PODGLĄDZIE (pełny tekst i tak odtwarzamy z pliku na koniec, jeśli były luki).
+    private let maxLiveChunkSamples = 16_000 * 30
+
     private func pumpLive(minSeconds: Double) async {
         let newSamples = capture.takeLiveSamples()
         if !newSamples.isEmpty { liveAccumulator.append(contentsOf: newSamples) }
         let needed = Int(16_000 * minSeconds)
         guard liveAccumulator.count >= needed else { return }
+        // Ogranicz fragment: jeśli zebrało się więcej niż limit, bierz najnowsze i odetnij starsze.
+        if liveAccumulator.count > maxLiveChunkSamples {
+            liveAccumulator.removeFirst(liveAccumulator.count - maxLiveChunkSamples)
+        }
         let chunk = liveAccumulator
         liveAccumulator.removeAll(keepingCapacity: true)
         if let text = try? await transcription.transcribe(samples: chunk) {
             if !text.isEmpty { appendLive(text) }   // pusty = cisza, fragment skonsumowany
         } else {
-            // Transkrypcja fragmentu zawiodła — nie gub próbek; spróbuj z kolejnymi.
+            // Transkrypcja fragmentu zawiodła — zachowaj najnowsze ~30 s i spróbuj dalej.
             liveAccumulator.insert(contentsOf: chunk, at: 0)
-            let cap = Int(16_000 * 90)   // ogranicz do ~90 s, gdyby model padał w kółko
-            if liveAccumulator.count > cap {
-                liveAccumulator.removeFirst(liveAccumulator.count - cap)
+            if liveAccumulator.count > maxLiveChunkSamples {
+                liveAccumulator.removeFirst(liveAccumulator.count - maxLiveChunkSamples)
             }
         }
     }
@@ -571,6 +580,9 @@ final class AppModel {
         liveTask = nil
         let remaining = capture.takeLiveSamples()
         if !remaining.isEmpty { liveAccumulator.append(contentsOf: remaining) }
+        if liveAccumulator.count > maxLiveChunkSamples {
+            liveAccumulator.removeFirst(liveAccumulator.count - maxLiveChunkSamples)
+        }
         if !liveAccumulator.isEmpty {
             if let text = try? await transcription.transcribe(samples: liveAccumulator), !text.isEmpty {
                 appendLive(text)
@@ -626,13 +638,21 @@ final class AppModel {
         let names = (relPaths.count == datas.count) ? relPaths : []   // spójność: wszystkie albo żadne
         let raw = try await notes.generate(
             transcript: transcript, style: style, model: notesModel,
-            images: datas, imageTimes: times, imageFilenames: names, imageContext: imageContext
+            images: datas, imageTimes: times, imageFilenames: names, imageContext: imageContext,
+            onProgress: { [weak self] part, total in
+                self?.statusDetail = total > 1 ? "AI pisze notatki — część \(part)/\(total)…" : "AI pisze notatki…"
+            }
         )
         // Diagramy mermaid i wzory ($$…$$ / \ce{}) → obrazy, żeby wyglądały dobrze
         // i przechodziły do Apple Notes / PDF tak jak zrzuty.
-        return await DiagramRasterizer.shared.process(
+        if raw.contains("```mermaid") || raw.contains("$$") {
+            statusDetail = "Renderuję diagramy i wzory…"
+        }
+        let processed = await DiagramRasterizer.shared.process(
             markdown: raw, course: course, title: title, date: date, storage: storage
         )
+        statusDetail = ""
+        return processed
     }
 
     /// Zapisuje bieżący transkrypt na DYSK po każdym fragmencie — gwarancja, że nawet
@@ -661,12 +681,27 @@ final class AppModel {
             return
         }
 
+        let liveDropped = capture.liveAudioDropped   // czy live nie nadążało (są luki)
         do {
             phase = .transcribing
             let transcript: String
             if usedLive {
                 await finalizeLive()
-                transcript = rawTranscript   // przy kontynuacji rawTranscript zawiera już bazę
+                // Jeśli live nie nadążało (odrzucało próbki), transkrypt podglądu ma luki —
+                // dotranskrybuj cały plik z dysku (chunked, mała pamięć), żeby nic nie zgubić.
+                if liveDropped {
+                    statusDetail = "Uzupełniam transkrypcję z nagrania…"
+                    let full = (try? await transcribeLong(audioURL)) ?? ""
+                    if let base = continuationBase, !base.isEmpty {
+                        // Kontynuacja: plik audioURL to tylko NOWY fragment — doklej do bazy.
+                        transcript = full.isEmpty ? rawTranscript : base + "\n\n" + full
+                    } else {
+                        transcript = full.count > rawTranscript.count ? full : rawTranscript
+                    }
+                    statusDetail = ""
+                } else {
+                    transcript = rawTranscript   // przy kontynuacji rawTranscript zawiera już bazę
+                }
             } else {
                 await ensureModelReady()   // nagranie nie-live: ładujemy model dopiero teraz
                 let newText = try await transcribeLong(audioURL)
@@ -1285,6 +1320,89 @@ final class AppModel {
         return removed
     }
 
+    // MARK: - Raport pamięci (panel w Ustawieniach)
+
+    func storageReport() -> StorageReport {
+        let audio = storage.sizeOfFiles(inSubdir: "audio", extensions: ["caf", "wav", "m4a"])
+        let screenshots = storage.screenshotsSize()
+        let transcripts = storage.sizeOfFiles(inSubdir: "transkrypty", extensions: ["txt"])
+        let notes = storage.sizeOfFiles(inSubdir: "notatki", extensions: ["md"])
+        let variants = storage.modelVariants()
+        let activeVariant = transcription.loadedVariant ?? resolvedActiveVariant
+        let models = variants.map {
+            StorageReport.Model(name: $0.name, bytes: $0.bytes, isActive: $0.name == activeVariant)
+        }
+        return StorageReport(audioBytes: audio, screenshotsBytes: screenshots,
+                             transcriptsBytes: transcripts, notesBytes: notes, models: models)
+    }
+
+    /// Wariant, który aplikacja faktycznie wczytuje (ustawiony lub domyślny turbo).
+    private var resolvedActiveVariant: String {
+        let stored = storedTranscriptionVariant?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return stored.isEmpty ? TranscriptionEngine.recommendedDefaultVariant() : stored
+    }
+
+    /// Usuwa wszystkie pobrane modele oprócz aktywnego — odzyskuje miejsce. Zwraca liczbę usuniętych.
+    @discardableResult
+    func deleteUnusedModels() -> Int {
+        let keep = Set([resolvedActiveVariant, transcription.loadedVariant].compactMap { $0 })
+        var removed = 0
+        for v in storage.modelVariants() where !keep.contains(v.name) {
+            try? FileManager.default.removeItem(at: v.url)
+            removed += 1
+        }
+        return removed
+    }
+
+    // MARK: - Zrzuty: wtapianie w notatkę po N dniach (opcja oszczędzania miejsca)
+
+    /// Po `days` dniach wtapia osobne pliki zrzutów w treść `.md` (jako data:base64) i kasuje
+    /// pliki — zdjęcia zostają w notatce, a nie zajmują miejsca jako luźne pliki.
+    @discardableResult
+    func embedAgedScreenshots(olderThanDays days: Int = 2) -> Int {
+        guard UserDefaults.standard.object(forKey: SettingsKeys.embedOldScreenshots) == nil
+                || UserDefaults.standard.bool(forKey: SettingsKeys.embedOldScreenshots) else { return 0 }
+        // Skan po plikach .md (bez zależności od bazy danych → działa też zanim DB się podłączy).
+        let fm = FileManager.default
+        guard let courses = try? fm.contentsOfDirectory(at: storage.baseDirectory, includingPropertiesForKeys: nil) else { return 0 }
+        let cutoff = Date().addingTimeInterval(-Double(days) * 86_400)
+        var embedded = 0
+        for course in courses {
+            let notesDir = course.appendingPathComponent("notatki", isDirectory: true)
+            guard let mdFiles = try? fm.contentsOfDirectory(at: notesDir, includingPropertiesForKeys: nil) else { continue }
+            for mdURL in mdFiles where mdURL.pathExtension == "md" {
+                guard var md = try? String(contentsOf: mdURL, encoding: .utf8), md.contains(".assets/") else { continue }
+                var changed = false
+                let lines = md.components(separatedBy: "\n").map { line -> String in
+                    let t = line.trimmingCharacters(in: .whitespaces)
+                    guard t.hasPrefix("!["), t.hasSuffix(")"), let sep = t.range(of: "](") else { return line }
+                    let inside = String(t[sep.upperBound..<t.index(before: t.endIndex)])
+                    guard !inside.hasPrefix("data:"), inside.contains(".assets/") else { return line }
+                    var rel = inside, widthTitle = ""
+                    if inside.hasSuffix("\""), let q = inside.range(of: " \"", options: .backwards) {
+                        rel = String(inside[inside.startIndex..<q.lowerBound])
+                        widthTitle = String(inside[q.lowerBound...])
+                    }
+                    let fileURL = notesDir.appendingPathComponent(rel)
+                    guard let attrs = try? fm.attributesOfItem(atPath: fileURL.path),
+                          let mtime = attrs[.modificationDate] as? Date, mtime < cutoff,
+                          let data = try? Data(contentsOf: fileURL) else { return line }
+                    let mime = fileURL.pathExtension.lowercased() == "png" ? "image/png" : "image/jpeg"
+                    let alt = String(t[t.index(t.startIndex, offsetBy: 2)..<sep.lowerBound])
+                    try? fm.removeItem(at: fileURL)
+                    changed = true; embedded += 1
+                    return "![\(alt)](data:\(mime);base64,\(data.base64EncodedString())\(widthTitle))"
+                }
+                if changed {
+                    md = lines.joined(separator: "\n")
+                    try? md.write(to: mdURL, atomically: true, encoding: .utf8)
+                    if let lec = selectedLecture, lec.latestNotesPath == mdURL.path { notesMarkdown = md }
+                }
+            }
+        }
+        return embedded
+    }
+
     // MARK: - Historia / nowa sesja
 
     func select(_ lecture: Lecture) {
@@ -1314,6 +1432,24 @@ final class AppModel {
     private var notesModel: String {
         let stored = UserDefaults.standard.string(forKey: SettingsKeys.notesModel) ?? ""
         return stored.isEmpty ? "claude-sonnet-4-6" : stored
+    }
+}
+
+/// Raport zajętości dysku (do panelu „Pamięć" w Ustawieniach).
+struct StorageReport {
+    struct Model: Identifiable { var id: String { name }; let name: String; let bytes: Int64; let isActive: Bool }
+    let audioBytes: Int64
+    let screenshotsBytes: Int64
+    let transcriptsBytes: Int64
+    let notesBytes: Int64
+    let models: [Model]
+
+    var modelsBytes: Int64 { models.reduce(0) { $0 + $1.bytes } }
+    var dataBytes: Int64 { audioBytes + screenshotsBytes + transcriptsBytes + notesBytes }
+    var totalBytes: Int64 { dataBytes + modelsBytes }
+
+    static func format(_ bytes: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
     }
 }
 

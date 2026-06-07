@@ -119,6 +119,11 @@ struct MarkdownView: View {
     }
 
     private func loadImage(_ path: String) -> NSImage? {
+        // Obraz wtopiony w notatkę: data:image/...;base64,XXXX
+        if path.hasPrefix("data:"), let comma = path.firstIndex(of: ","),
+           let data = Data(base64Encoded: String(path[path.index(after: comma)...])) {
+            return NSImage(data: data)
+        }
         let url: URL
         if path.hasPrefix("/") {
             url = URL(fileURLWithPath: path)

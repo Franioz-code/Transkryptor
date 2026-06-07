@@ -50,6 +50,7 @@ struct RootView: View {
         .task(id: hasCompletedOnboarding) {
             if hasCompletedOnboarding {
                 appModel.recoverInterruptedSessions()
+                appModel.embedAgedScreenshots()   // wtop stare zrzuty w notatki, zwolnij luźne pliki
                 appModel.showIndicator()
                 await appModel.prepareModelOnLaunch()
             }

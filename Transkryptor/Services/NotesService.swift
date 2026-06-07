@@ -60,7 +60,8 @@ struct NotesService {
         images: [Data] = [],
         imageTimes: [String] = [],
         imageFilenames: [String] = [],
-        imageContext: String = ""
+        imageContext: String = "",
+        onProgress: (@MainActor (Int, Int) -> Void)? = nil
     ) async throws -> String {
         let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { throw NotesError.emptyTranscript }
@@ -68,6 +69,7 @@ struct NotesService {
         let system = Prompts.systemPrompt(userStyle: style)
 
         if trimmed.count <= splitThreshold {
+            await onProgress?(1, 1)
             let content = userContent(
                 text: Prompts.userMessage(transcript: trimmed),
                 images: images, imageTimes: imageTimes, imageFilenames: imageFilenames,
@@ -81,6 +83,7 @@ struct NotesService {
         let chunks = splitTranscript(trimmed, maxChars: chunkSize)
         var parts: [String] = []
         for (index, chunk) in chunks.enumerated() {
+            await onProgress?(index + 1, chunks.count)
             let isLast = index == chunks.count - 1
             let message = Prompts.chunkUserMessage(
                 part: index + 1, total: chunks.count, transcript: chunk

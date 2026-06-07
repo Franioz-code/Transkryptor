@@ -248,6 +248,7 @@ final class AudioCaptureManager {
         if let stream {
             try? await stream.stopCapture()
         }
+        liveAudioDropped = output?.didDropLiveSamples ?? false
         output?.finish()
         stream = nil
         output = nil
@@ -260,6 +261,10 @@ final class AudioCaptureManager {
     func takeLiveSamples() -> [Float] {
         output?.takeLiveSamples() ?? []
     }
+
+    /// Czy podczas sesji odrzucono próbki live (transkrypcja nie nadążała) — wtedy
+    /// transkrypt live ma luki i na koniec dotranskrybujemy cały plik z dysku.
+    private(set) var liveAudioDropped = false
 
     // MARK: - Timer
 
@@ -315,6 +320,15 @@ private final class CaptureOutput: NSObject, SCStreamOutput, SCStreamDelegate, @
     private var liveFormat: AVAudioFormat?
     private var pendingSamples: [Float] = []
     private let pendingLock = NSLock()
+    /// TWARDY limit bufora live (~120 s = ~7,7 MB). Bez tego, gdy transkrypcja nie nadąża
+    /// z czasem rzeczywistym (wolniejszy Mac, długi wykład), bufor rośnie w nieskończoność
+    /// i zjada GB RAM. Po przekroczeniu odrzucamy najstarsze próbki i zaznaczamy „drop".
+    private let maxPendingSamples = 16_000 * 120
+    private var didDropLiveSamplesFlag = false
+    var didDropLiveSamples: Bool {
+        pendingLock.lock(); defer { pendingLock.unlock() }
+        return didDropLiveSamplesFlag
+    }
 
     init(fileURL: URL,
          liveSegmentation: SilenceSegmenter.Params?,
@@ -433,6 +447,11 @@ private final class CaptureOutput: NSObject, SCStreamOutput, SCStreamDelegate, @
         guard count > 0 else { return }
         pendingLock.lock()
         pendingSamples.append(contentsOf: UnsafeBufferPointer(start: channel[0], count: count))
+        // Twardy sufit pamięci: jeśli pętla live nie nadąża z opróżnianiem, odrzuć najstarsze.
+        if pendingSamples.count > maxPendingSamples {
+            pendingSamples.removeFirst(pendingSamples.count - maxPendingSamples)
+            didDropLiveSamplesFlag = true
+        }
         pendingLock.unlock()
     }
 

@@ -63,7 +63,10 @@ struct RecordPanelView: View {
 
             // ③ Nagrywaj
             step(3, stepThreeTitle) {
-                controls
+                VStack(alignment: .leading, spacing: 10) {
+                    controls
+                    modelStatusBadge
+                }
             }
         }
         .padding(20)
@@ -160,6 +163,45 @@ struct RecordPanelView: View {
             }
             Spacer()
         }
+    }
+
+    /// Czytelny stan modelu transkrypcji: pobieranie / ładowanie / gotowość.
+    @ViewBuilder private var modelStatusBadge: some View {
+        switch appModel.transcription.state {
+        case let .downloading(p):
+            HStack(spacing: 8) {
+                ProgressView(value: p).frame(width: 120)
+                Text("Pobieram model transkrypcji… \(Int(p * 100))%")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        case .loading:
+            Label { Text("Ładuję model transkrypcji…").font(.caption) }
+                icon: { ProgressView().controlSize(.small) }
+                .foregroundStyle(.secondary)
+        case .ready:
+            if isRecording {
+                EmptyView()
+            } else {
+                Label("Model wczytany — gotowy do nagrywania", systemImage: "checkmark.seal.fill")
+                    .font(.caption).foregroundStyle(.green)
+            }
+        case let .failed(msg):
+            Label(msg, systemImage: "exclamationmark.triangle.fill")
+                .font(.caption).foregroundStyle(.red).lineLimit(2)
+        case .notLoaded:
+            if !isRecording {
+                Label(modelOnDisk ? "Gotowe do nagrywania (model wczyta się przy starcie)"
+                                  : "Model pobierze się przy pierwszym nagraniu",
+                      systemImage: modelOnDisk ? "checkmark.circle" : "arrow.down.circle")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var modelOnDisk: Bool {
+        appModel.transcription.isDownloaded(
+            variant: UserDefaults.standard.string(forKey: SettingsKeys.transcriptionModelVariant)
+        )
     }
 
     private var stepThreeTitle: String {

@@ -142,6 +142,68 @@ struct StorageService {
         try? String(contentsOf: URL(fileURLWithPath: path), encoding: .utf8)
     }
 
+    // MARK: - Raport zajętości dysku
+
+    /// Rekurencyjny rozmiar katalogu w bajtach (0 gdy nie istnieje).
+    func folderSize(_ url: URL) -> Int64 {
+        let fm = FileManager.default
+        guard let en = fm.enumerator(at: url, includingPropertiesForKeys: [.totalFileAllocatedSizeKey, .fileAllocatedSizeKey]) else { return 0 }
+        var total: Int64 = 0
+        for case let f as URL in en {
+            let v = try? f.resourceValues(forKeys: [.totalFileAllocatedSizeKey, .fileAllocatedSizeKey])
+            total += Int64(v?.totalFileAllocatedSize ?? v?.fileAllocatedSize ?? 0)
+        }
+        return total
+    }
+
+    /// Sumuje rozmiar plików o danych rozszerzeniach w podkatalogu (np. „audio") każdego kursu.
+    func sizeOfFiles(inSubdir subdir: String, extensions: Set<String>) -> Int64 {
+        let fm = FileManager.default
+        guard let courses = try? fm.contentsOfDirectory(at: baseDirectory, includingPropertiesForKeys: nil) else { return 0 }
+        var total: Int64 = 0
+        for course in courses {
+            let dir = course.appendingPathComponent(subdir, isDirectory: true)
+            guard let en = fm.enumerator(at: dir, includingPropertiesForKeys: [.totalFileAllocatedSizeKey]) else { continue }
+            for case let f as URL in en where extensions.contains(f.pathExtension.lowercased()) {
+                let v = try? f.resourceValues(forKeys: [.totalFileAllocatedSizeKey])
+                total += Int64(v?.totalFileAllocatedSize ?? 0)
+            }
+        }
+        return total
+    }
+
+    /// Sumuje rozmiar folderów `*.assets` (zrzuty + wyrenderowane diagramy/wzory) we wszystkich kursach.
+    func screenshotsSize() -> Int64 {
+        let fm = FileManager.default
+        guard let courses = try? fm.contentsOfDirectory(at: baseDirectory, includingPropertiesForKeys: nil) else { return 0 }
+        var total: Int64 = 0
+        for course in courses {
+            let notes = course.appendingPathComponent("notatki", isDirectory: true)
+            guard let items = try? fm.contentsOfDirectory(at: notes, includingPropertiesForKeys: nil) else { continue }
+            for item in items where item.pathExtension == "assets" {
+                total += folderSize(item)
+            }
+        }
+        return total
+    }
+
+    /// Bazowy katalog cache modeli WhisperKit (per-user).
+    var modelsBaseDirectory: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Documents/huggingface/models/argmaxinc/whisperkit-coreml", isDirectory: true)
+    }
+
+    /// Lista pobranych wariantów modeli z rozmiarami (do panelu pamięci).
+    func modelVariants() -> [(name: String, url: URL, bytes: Int64)] {
+        let fm = FileManager.default
+        guard let items = try? fm.contentsOfDirectory(at: modelsBaseDirectory, includingPropertiesForKeys: nil) else { return [] }
+        return items
+            .filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true }
+            .filter { !$0.lastPathComponent.hasPrefix(".") }
+            .map { (name: $0.lastPathComponent, url: $0, bytes: folderSize($0)) }
+            .sorted { $0.bytes > $1.bytes }
+    }
+
     // MARK: - Pomocnicze
 
     func sanitize(_ name: String) -> String {
@@ -179,4 +241,6 @@ enum SettingsKeys {
     static let liveTranscription = "liveTranscription"
     /// Czy zachowywać pliki audio po przetworzeniu (domyślnie NIE — oszczędza miejsce).
     static let keepAudio = "keepAudio"
+    /// Czy po 2 dniach wtapiać zrzuty w notatkę i kasować luźne pliki (domyślnie TAK).
+    static let embedOldScreenshots = "embedOldScreenshots"
 }

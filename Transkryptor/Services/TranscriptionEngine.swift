@@ -66,12 +66,24 @@ final class TranscriptionEngine {
 
     // MARK: - Pobranie + załadowanie modelu
 
+    /// Czy pliki danego wariantu są już na dysku (gotowe do szybkiego wczytania).
+    func isDownloaded(variant: String?) -> Bool {
+        let resolved = resolvedVariant(variant)
+        let dir = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Documents/huggingface/models/argmaxinc/whisperkit-coreml/\(resolved)")
+        return FileManager.default.fileExists(atPath: dir.appendingPathComponent("AudioEncoder.mlmodelc").path)
+    }
+
     /// Pobiera pliki modelu do cache, ale NIE ładuje go do pamięci (używane na starcie,
     /// żeby pierwsze nagranie było szybkie, bez trzymania modelu w RAM bezczynnie).
+    /// Przy pierwszym (dużym) pobieraniu pokazuje postęp przez `state`.
     func ensureDownloaded(variant: String?) async {
         if isReady { return }
         let resolved = resolvedVariant(variant)
-        _ = try? await WhisperKit.download(variant: resolved, progressCallback: { _ in })
+        if isDownloaded(variant: resolved) { return }   // już na dysku — nic nie pokazujemy
+        state = .downloading(0)
+        _ = try? await download(resolved)
+        if case .downloading = state { state = .notLoaded }   // pobrane, ale nie wczytane do RAM
     }
 
     /// Zwalnia model z pamięci (ARC oddaje ~kilka GB wag + bufory CoreML).

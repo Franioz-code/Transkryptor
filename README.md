@@ -4,6 +4,8 @@
 
 > ✅ **Source code is public.** This is a personal project; the full implementation is in this repository.
 
+> **How it was built:** with AI coding agents. I designed the product and made the architecture decisions (on-device transcription, audio pipeline, memory budget, notes format).
+
 ---
 
 ## Overview
